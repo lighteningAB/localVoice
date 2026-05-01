@@ -1,0 +1,33 @@
+# Built output
+build/
+captures/
+out/
+
+# Native build cache
+.cxx/
+.externalNativeBuild/
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+# IntelliJ / Android Studio
+*.iml
+.idea/
+.kotlin/
+
+# Local config (machine-specific paths, signing, secrets)
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models (downloaded at runtime, not in repo)
+*.bin
+*.gguf
