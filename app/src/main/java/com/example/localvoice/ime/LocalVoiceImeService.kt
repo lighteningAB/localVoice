@@ -26,6 +26,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.thread
 
@@ -36,8 +38,15 @@ class LocalVoiceImeService : InputMethodService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // Serializes whisper transcribe calls (warmup + real). whisper_full is not reentrant.
+    private val transcribeMutex = Mutex()
+
     // Lazily-loaded whisper context (kept alive across utterances).
     private var whisper: WhisperContext? = null
+
+    // Set once we've successfully run a dummy inference; prevents repeat warmups
+    // across input-view rebuilds (which fire on every text-field focus change).
+    @Volatile private var warmedUp = false
 
     // View references — rebuilt each onCreateInputView.
     private var rootView: View? = null
@@ -57,6 +66,14 @@ class LocalVoiceImeService : InputMethodService() {
 
     private var state: State = State.IDLE
 
+    override fun onCreate() {
+        super.onCreate()
+        // Warm up as early as possible — onCreate runs when the system first
+        // binds the IME, before any input view is shown. By the time the user
+        // taps the mic, the encoder + thread pool are already hot.
+        warmUpWhisperOnce()
+    }
+
     override fun onCreateInputView(): View {
         val view = layoutInflater.inflate(R.layout.ime_view, null)
         rootView = view
@@ -74,12 +91,54 @@ class LocalVoiceImeService : InputMethodService() {
         }
 
         switchKeyboardButton?.setOnClickListener {
-            val imm = getSystemService(InputMethodManager::class.java)
-            imm?.showInputMethodPicker()
+            // Cycle directly to next IME — no dialog. Matches Gboard's globe.
+            // (Note: when the host is a home-screen widget, switching IMEs may
+            // dismiss the field; that's a launcher-side limitation, not ours.)
+            if (!switchToNextInputMethod(false)) {
+                getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
+            }
+        }
+        switchKeyboardButton?.setOnLongClickListener {
+            getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
+            true
         }
 
         applyIdleUi()
+        // Defensive: if onCreate's warmup got skipped (model not yet downloaded),
+        // try again on view creation in case the user just finished the download.
+        warmUpWhisperOnce()
         return view
+    }
+
+    private fun warmUpWhisperOnce() {
+        if (warmedUp) return
+        val modelManager = (application as LocalVoiceApp).container.modelManager
+        if (!modelManager.hasWhisperModel()) return
+        warmedUp = true // mark optimistically — failure logs but won't loop
+        serviceScope.launch {
+            try {
+                transcribeMutex.withLock {
+                    val warmStartNs = System.nanoTime()
+                    val ctx = ensureWhisper()
+                    // 4 s of silence at 16 kHz, audio_ctx ≈ typical short utterance.
+                    // Triggers encoder allocation + thread-pool spinup so the user's
+                    // first real tap hits a hot path instead of paying ~3 s of init.
+                    val dummy = FloatArray(WARMUP_SAMPLES)
+                    // Tiny audio_ctx — we only need to trigger init, not process audio.
+                    val warmAudioCtx = ((WARMUP_SAMPLES / 320) + 16).coerceAtMost(1500)
+                    ctx.transcribe(
+                        dummy,
+                        language = "en",
+                        nThreads = 4,
+                        audioCtx = warmAudioCtx,
+                    )
+                    val ms = (System.nanoTime() - warmStartNs) / 1_000_000
+                    Log.i(TAG, "warmup completed: ${ms}ms (audio_ctx=$warmAudioCtx)")
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "warmup failed", t)
+            }
+        }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -208,31 +267,38 @@ class LocalVoiceImeService : InputMethodService() {
                     }
                 }
 
-                val whisperPreloaded = whisper != null
-                val loadStartNs = System.nanoTime()
-                val ctx = if (samples.isEmpty()) null else ensureWhisper()
-                val loadMs = (System.nanoTime() - loadStartNs) / 1_000_000
-                if (!whisperPreloaded) Log.i(TAG, "whisper model load: ${loadMs}ms")
+                val mutexAcquireStartNs = System.nanoTime()
+                val text = transcribeMutex.withLock {
+                    val mutexWaitMs = (System.nanoTime() - mutexAcquireStartNs) / 1_000_000
+                    if (mutexWaitMs > 5) Log.i(TAG, "waited ${mutexWaitMs}ms for warmup to finish")
 
-                // whisper.cpp: 1 audio_ctx token = 320 samples @ 16 kHz (= 20 ms).
-                // Cap at 1500 (= full 30 s = whisper default). Add a small tail buffer
-                // so we don't truncate the last word.
-                val audioCtx = ((totalLen / 320) + 32).coerceAtMost(1500)
+                    val whisperPreloaded = whisper != null
+                    val loadStartNs = System.nanoTime()
+                    val ctx = if (samples.isEmpty()) null else ensureWhisper()
+                    val loadMs = (System.nanoTime() - loadStartNs) / 1_000_000
+                    if (!whisperPreloaded) Log.i(TAG, "whisper model load: ${loadMs}ms")
 
-                val transcribeStartNs = System.nanoTime()
-                val text = ctx?.transcribe(
-                    samples,
-                    language = "auto",
-                    nThreads = 4,
-                    audioCtx = audioCtx,
-                )?.trim().orEmpty()
-                val transcribeMs = (System.nanoTime() - transcribeStartNs) / 1_000_000
-                val rt = if (audioSec > 0) transcribeMs / 1000.0 / audioSec else 0.0
-                Log.i(
-                    TAG,
-                    "transcribe: ${transcribeMs}ms for ${"%.2f".format(audioSec)}s audio " +
-                        "(${"%.2fx".format(rt)} realtime, audio_ctx=$audioCtx), ${text.length} chars",
-                )
+                    // whisper.cpp: 1 audio_ctx token = 320 samples @ 16 kHz (= 20 ms).
+                    // Cap at 1500 (= full 30 s = whisper default). Add a small tail buffer
+                    // so we don't truncate the last word.
+                    val audioCtx = ((totalLen / 320) + 32).coerceAtMost(1500)
+
+                    val transcribeStartNs = System.nanoTime()
+                    val out = ctx?.transcribe(
+                        samples,
+                        language = "auto",
+                        nThreads = 4,
+                        audioCtx = audioCtx,
+                    )?.trim().orEmpty()
+                    val transcribeMs = (System.nanoTime() - transcribeStartNs) / 1_000_000
+                    val rt = if (audioSec > 0) transcribeMs / 1000.0 / audioSec else 0.0
+                    Log.i(
+                        TAG,
+                        "transcribe: ${transcribeMs}ms for ${"%.2f".format(audioSec)}s audio " +
+                            "(${"%.2fx".format(rt)} realtime, audio_ctx=$audioCtx), ${out.length} chars",
+                    )
+                    out
+                }
 
                 withContext(Dispatchers.Main) {
                     val commitStartNs = System.nanoTime()
@@ -326,5 +392,9 @@ class LocalVoiceImeService : InputMethodService() {
         private const val TAG = "LocalVoiceIme"
         private const val SAMPLE_RATE = 16_000
         private const val MAX_LISTEN_MS = 60_000L
+        // 0.5 s of silence — enough to trigger thread-pool init, ggml backend
+        // setup, and decoder KV-cache allocation. Keep it small so the user
+        // doesn't wait if they tap the mic immediately after switching keyboards.
+        private const val WARMUP_SAMPLES = SAMPLE_RATE / 2
     }
 }
