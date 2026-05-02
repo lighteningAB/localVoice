@@ -16,15 +16,21 @@ No cloud. No telemetry. Audio and transcripts live in app-private storage.
 ### 1. Install
 Sideload the APK. If Android blocks it, allow "install from unknown sources" for whichever app you sent it from (Drive, Files, etc.).
 
-### 2. Open the app and download the model
-1. Open **localVoice**. Grant microphone access when prompted.
-2. The home screen shows a **model status banner**. Tap **Download** for the **Whisper model** (~190 MB, one-time). Wi-Fi recommended; takes a minute or two.
-3. Optional: also download the **cleanup model** (Qwen3, ~1 GB). Used only for LLM-cleaned memos. Skip if you only want the voice keyboard.
+### 2. Grant microphone access
+1. Open **localVoice**.
+2. Android will prompt for microphone access — tap **Allow**.
+3. If you tapped **Don't allow** by mistake, fix it manually: Android **Settings → Apps → localVoice → Permissions → Microphone → Allow**.
 
-### 3. Quick sanity check (optional)
+The voice keyboard cannot request this itself, so without this step it will silently fail to record.
+
+### 3. Download the model
+1. On the home screen you'll see a **model status banner**. Tap **Download** for the **Whisper model** (~190 MB, one-time). Wi-Fi recommended; takes a minute or two.
+2. Optional: also download the **cleanup model** (Qwen3, ~1 GB). Used only for LLM-cleaned memos. Skip if you only want the voice keyboard.
+
+### 4. Quick sanity check (optional)
 Tap the big record button on the home screen → say a sentence → tap stop. Transcribed text should appear under the recording.
 
-### 4. Enable the voice keyboard
+### 5. Enable the voice keyboard
 1. In the app, scroll to the **Voice keyboard** card.
 2. Tap **Open keyboard settings**. Android's on-screen keyboards list opens.
 3. Toggle **localVoice** on. Accept Android's warning ("this keyboard can read everything you type" — it's our app, we don't log anything).
