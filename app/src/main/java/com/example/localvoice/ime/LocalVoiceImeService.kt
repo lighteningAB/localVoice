@@ -214,14 +214,24 @@ class LocalVoiceImeService : InputMethodService() {
                 val loadMs = (System.nanoTime() - loadStartNs) / 1_000_000
                 if (!whisperPreloaded) Log.i(TAG, "whisper model load: ${loadMs}ms")
 
+                // whisper.cpp: 1 audio_ctx token = 320 samples @ 16 kHz (= 20 ms).
+                // Cap at 1500 (= full 30 s = whisper default). Add a small tail buffer
+                // so we don't truncate the last word.
+                val audioCtx = ((totalLen / 320) + 32).coerceAtMost(1500)
+
                 val transcribeStartNs = System.nanoTime()
-                val text = ctx?.transcribe(samples, language = "auto", nThreads = 4)?.trim().orEmpty()
+                val text = ctx?.transcribe(
+                    samples,
+                    language = "auto",
+                    nThreads = 4,
+                    audioCtx = audioCtx,
+                )?.trim().orEmpty()
                 val transcribeMs = (System.nanoTime() - transcribeStartNs) / 1_000_000
                 val rt = if (audioSec > 0) transcribeMs / 1000.0 / audioSec else 0.0
                 Log.i(
                     TAG,
                     "transcribe: ${transcribeMs}ms for ${"%.2f".format(audioSec)}s audio " +
-                        "(${"%.2fx".format(rt)} realtime), ${text.length} chars",
+                        "(${"%.2fx".format(rt)} realtime, audio_ctx=$audioCtx), ${text.length} chars",
                 )
 
                 withContext(Dispatchers.Main) {

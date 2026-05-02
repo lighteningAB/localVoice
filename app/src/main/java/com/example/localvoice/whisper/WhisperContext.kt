@@ -2,9 +2,14 @@ package com.example.localvoice.whisper
 
 class WhisperContext private constructor(private var ptr: Long) : AutoCloseable {
 
-    fun transcribe(samples: FloatArray, language: String = "auto", nThreads: Int = 4): String {
+    fun transcribe(
+        samples: FloatArray,
+        language: String = "auto",
+        nThreads: Int = 4,
+        audioCtx: Int = 0,
+    ): String {
         check(ptr != 0L) { "WhisperContext released" }
-        return nativeTranscribe(ptr, samples, language, nThreads)
+        return nativeTranscribe(ptr, samples, language, nThreads, audioCtx)
     }
 
     /** ISO 639-1 code of the language detected on the most recent transcribe() call, or empty. */
@@ -33,7 +38,7 @@ class WhisperContext private constructor(private var ptr: Long) : AutoCloseable 
 
         @JvmStatic external fun nativeInit(path: String): Long
         @JvmStatic external fun nativeTranscribe(
-            ptr: Long, samples: FloatArray, language: String, nThreads: Int,
+            ptr: Long, samples: FloatArray, language: String, nThreads: Int, audioCtx: Int,
         ): String
         @JvmStatic external fun nativeGetDetectedLanguage(ptr: Long): String
         @JvmStatic external fun nativeFree(ptr: Long)

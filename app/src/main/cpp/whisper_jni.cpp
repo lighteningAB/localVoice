@@ -42,7 +42,7 @@ Java_com_example_localvoice_whisper_WhisperContext_nativeInit(
 JNIEXPORT jstring JNICALL
 Java_com_example_localvoice_whisper_WhisperContext_nativeTranscribe(
     JNIEnv *env, jclass /*clazz*/, jlong ptr,
-    jfloatArray jsamples, jstring jlanguage, jint nThreads) {
+    jfloatArray jsamples, jstring jlanguage, jint nThreads, jint audioCtx) {
 
     auto *ctx = reinterpret_cast<whisper_context *>(ptr);
     if (!ctx) return env->NewStringUTF("");
@@ -57,6 +57,7 @@ Java_com_example_localvoice_whisper_WhisperContext_nativeTranscribe(
     params.translate        = false;
     params.detect_language  = false; // we want transcription, not just lang probe
     params.n_threads        = nThreads > 0 ? nThreads : 4;
+    params.audio_ctx        = audioCtx;
 
     const char *language = env->GetStringUTFChars(jlanguage, nullptr);
     std::string langStr(language);
@@ -65,8 +66,8 @@ Java_com_example_localvoice_whisper_WhisperContext_nativeTranscribe(
     // "auto" -> let whisper auto-detect (handled internally when language is "auto")
     params.language = langStr.c_str();
 
-    LOGI("transcribing %d samples (lang=%s, threads=%d)",
-         nSamples, langStr.c_str(), params.n_threads);
+    LOGI("transcribing %d samples (lang=%s, threads=%d, audio_ctx=%d)",
+         nSamples, langStr.c_str(), params.n_threads, params.audio_ctx);
 
     int rc = whisper_full(ctx, params, samples, nSamples);
     env->ReleaseFloatArrayElements(jsamples, samples, JNI_ABORT);
